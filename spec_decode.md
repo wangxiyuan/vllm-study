@@ -217,7 +217,9 @@ flowchart TB
 
 ### 1.2.3 与 Target Model 的协作流程
 
-Spec Decode 与 Target Model 的协作采用"插桩"模式: 
+Spec Decode 与 Target Model 的协作采用"流水线"模式：
+
+**核心思想**：每一轮使用**上一轮生成的 draft tokens**作为输入，本轮 forward 后再为下一轮生成新的 draft tokens。
 
 ```mermaid
 sequenceDiagram
@@ -227,43 +229,62 @@ sequenceDiagram
     participant RS as RejectionSampler
     participant KV as KV Cache
 
-    Note over MR,KV: 第一轮: 生成初始 token
+    Note over MR,KV: 第一轮：生成初始 token + 第一批 draft tokens
     MR->>TM: forward(input_ids)
     TM-->>MR: hidden_states, logits
     MR->>RS: sample(logits)
     RS-->>MR: sampled_token
+    MR->>KV: update(sampled_token)
 
-    Note over MR,KV: 第二轮及以后: Speculative Decoding
-    MR->>EP: propose(hidden_states, input_ids)
-    EP-->>MR: draft_tokens[K]
+    Note over TM,EP: hidden_states 同时用于两处
+    MR->>EP: propose(hidden_states)
+    EP-->>MR: draft_tokens[K] (用于第二轮)
 
-    MR->>TM: forward(input_ids + draft_tokens)
+    Note over MR,KV: 第二轮：验证 draft tokens + 生成新一批 draft tokens
+    MR->>TM: forward(sampled_token + draft_tokens_from_round1)
     TM-->>MR: target_logits, target_hidden
 
+    Note over TM,EP: hidden_states 同时用于两处 (并行)
     MR->>RS: rejection_sample(draft_probs, target_probs)
     RS-->>MR: accepted_tokens[N], num_rejected
 
+    MR->>EP: propose(target_hidden)
+    EP-->>MR: draft_tokens[K] (用于第三轮)
+
     MR->>KV: update(accepted_tokens)
     MR->>MR: output accepted_tokens
+
+    Note over MR,KV: 第三轮及以后：重复第二轮流程
 ```
+
+**关键点说明**：
+1. `propose()` 使用的是**当前轮** target model 输出的 `hidden_states`
+2. `propose()` 生成的 `draft_tokens` 是供**下一轮**使用的，不是当前轮
+3. 每一轮的 forward 输入包含：上一轮接受的 token + 上一轮生成的 draft tokens
 
 ### 1.2.4 数据流与控制流分析
 
 **数据流**（Data Flow）:
 ```
-输入 tokens → Embedding → Target Model → hidden_states
-                                       ↓
-                                    EagleProposer
-                                       ↓
-                                 draft_tokens
-                                       ↓
-                            拼接 (input_ids + drafts)
-                                       ↓
-                              Target Model (验证)
-                                       ↓
-                                 RejectionSampler
-                                       ↓
-                                accepted tokens → KV Cache
+第一轮：
+输入 tokens → Embedding → Target Model → hidden_states → sampled_token
+                                              │
+                                              └─────────────► EagleProposer
+                                                                    ↓
+                                                            draft_tokens (用于下一轮)
+
+第二轮及以后：
+上一轮 accepted_token + 上一轮 draft_tokens → Target Model → hidden_states
+                                                        │
+                                          ┌─────────────┴─────────────┐
+                                          ↓                           ↓
+                                RejectionSampler (验证)         EagleProposer
+                                          │                    (为下一轮生成 draft)
+                                          ↓
+                                accepted tokens → KV Cache → Output
+
+关键：RejectionSampler 和 EagleProposer 都使用 Target Model 输出的 hidden_states，
+     两者是并行关系，不是串行依赖。
 ```
 
 **控制流**（Control Flow）:
@@ -273,10 +294,18 @@ EngineCore.execute_request()
         └─► ModelRunner.execute_model()
             ├─► 如果是 prefilled 请求
             │   └─► TargetModel.forward()
-            └─► 如果是 decoding 请求
-                ├─► EagleProposer.propose()
-                ├─► TargetModel.forward(验证)
-                └─► RejectionSampler.sample()
+            │   └─► Sample()
+            │   └─► EagleProposer.propose() (为下一轮生成 draft tokens)
+            │
+            └─► 如果是 decoding 请求 (有 draft tokens)
+                ├─► TargetModel.forward(输入包含上一轮的 draft tokens)
+                │   └─► 输出：hidden_states, logits
+                │
+                ├─► RejectionSampler.sample() (验证 draft tokens)
+                │   └─► 使用：hidden_states 计算的 target_probs
+                │
+                └─► EagleProposer.propose() (为下一轮生成新的 draft tokens)
+                    └─► 使用：hidden_states (与 RejectionSampler 并行，非串行)
 ```
 
 ---
