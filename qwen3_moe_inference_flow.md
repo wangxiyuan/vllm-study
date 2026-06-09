@@ -29,74 +29,105 @@ Qwen3MoE 是 Qwen3 的 **Mixture of Experts (MoE)** 变体，核心区别在于�
 **文档基于 Qwen3MoE 30B 配置**：
 ```json
 {
-  "architectures": [
-    "Qwen3MoeForCausalLM"
-  ],
-  "attention_bias": false,
-  "attention_dropout": 0.0,
-  "bos_token_id": 151643,
-  "decoder_sparse_step": 1,
-  "eos_token_id": 151645,
-  "head_dim": 128,
-  "hidden_act": "silu",
-  "hidden_size": 2048,
-  "initializer_range": 0.02,
-  "intermediate_size": 6144,
-  "max_position_embeddings": 40960,
-  "max_window_layers": 48,
-  "mlp_only_layers": [],
-  "model_type": "qwen3_moe",
-  "moe_intermediate_size": 768,
-  "norm_topk_prob": true,
-  "num_attention_heads": 32,
-  "num_experts": 128,
-  "num_experts_per_tok": 8,
-  "num_hidden_layers": 48,
-  "num_key_value_heads": 4,
-  "output_router_logits": false,
-  "rms_norm_eps": 1e-06,
-  "rope_scaling": null,
-  "rope_theta": 1000000.0,
-  "router_aux_loss_coef": 0.001,
-  "sliding_window": null,
-  "tie_word_embeddings": false,
-  "torch_dtype": "bfloat16",
-  "transformers_version": "4.51.0",
-  "use_cache": true,
-  "use_sliding_window": false,
-  "vocab_size": 151936
+  "architectures": ["Qwen3MoeForCausalLM"],  // 模型类名，HuggingFace 加载时根据此字段匹配
+  "attention_bias": false,                    // QKV 投影是否加 bias（false = 不加，省参数）
+  "attention_dropout": 0.0,                  // 注意力的 dropout 率（0 = 推理时无 dropout）
+  "bos_token_id": 151643,                    // 序列开始 token 的 ID
+  "decoder_sparse_step": 1,                  // 每隔几层用 MoE（1 = 每层都是 MoE，无稠密层）
+  "eos_token_id": 151645,                    // 序列结束 token 的 ID
+  "head_dim": 128,                           // 每个注意力 head 的维度
+  "hidden_act": "silu",                      // MLP 激活函数（SiLU = SwiGLU 用的激活）
+  "hidden_size": 2048,                       // 残差流的维度，也是 Embedding 的输出维度
+  "initializer_range": 0.02,                 // 权重初始化时的随机范围
+  "intermediate_size": 6144,                 // 稠密 MLP 的中间维度（3×hidden_size，本配置未使用）
+  "max_position_embeddings": 40960,          // 模型支持的最大序列长度（RoPE 预计算表的大小）
+  "max_window_layers": 48,                   // 使用 sliding window attention 的层数（48 = 全部）
+  "mlp_only_layers": [],                     // 强制使用稠密 MLP 的层号（空 = 不强制，由 decoder_sparse_step 决定）
+  "model_type": "qwen3_moe",                 // HuggingFace 模型类型标识
+  "moe_intermediate_size": 768,             // 每个 MoE 专家的 MLP 中间维度
+  "norm_topk_prob": true,                    // softmax+topk 后是否对权重重归一化到和为 1
+  "num_attention_heads": 32,                 // Query 的注意力头数
+  "num_experts": 128,                        // MoE 的专家总数
+  "num_experts_per_tok": 8,                  // 每个 token 激活的专家数 (top_k)
+  "num_hidden_layers": 48,                   // Transformer Decoder 层数
+  "num_key_value_heads": 4,                  // Key/Value 的注意力头数（GQA: 32Q / 4KV）
+  "output_router_logits": false,             // 是否输出路由 logits（训练时用于 aux loss，推理 false）
+  "rms_norm_eps": 1e-06,                     // RMSNorm 的分母防除零常数
+  "rope_scaling": null,                      // RoPE 位置缩放策略（null = 无缩放，用原始频率）
+  "rope_theta": 1000000.0,                   // RoPE 的 base 频率（控制旋转速度）
+  "router_aux_loss_coef": 0.001,             // 路由器辅助损失的系数（训练时负载均衡用）
+  "sliding_window": null,                    // sliding window 大小（null = 禁用，使用全局注意力）
+  "tie_word_embeddings": false,              // 是否共享 Embedding 和 LM Head 的权重
+  "torch_dtype": "bfloat16",                 // 模型权重存储的精度
+  "transformers_version": "4.51.0",           // 生成此配置的 transformers 库版本
+  "use_cache": true,                         // 是否使用 KV Cache（推理时必需为 true）
+  "use_sliding_window": false,               // 是否启用 sliding window attention
+  "vocab_size": 151936                       // 词表大小（决定 Embedding 和 LM Head 的维度）
 }
 ```
 
-### 架构设计特点：解耦的注意力维度
-
-Qwen3MoE 30B 采用**解耦设计**，`hidden_size` 与 `num_attention_heads × head_dim` 不相等：
-
-```
-hidden_size = 2048（残差流维度）
-num_attention_heads × head_dim = 32 × 128 = 4096（Q 投影维度）
-num_kv_heads × head_dim = 4 × 128 = 512（KV 投影维度）
-```
-
-**注意力层的维度变换**：
-```
-输入：[batch, seq, 2048]
-  │
-  ├─→ Q 投影：[2048 → 4096] → [batch, seq, 32, 128]
-  ├─→ K 投影：[2048 → 512]  → [batch, seq, 4, 128]
-  └─→ V 投影：[2048 → 512]  → [batch, seq, 4, 128]
-  │
-  └─→ 注意力计算 (GQA: 32 Q heads vs 4 KV heads)
-  │
-  └─→ O 投影：[4096 → 2048] → 输出回残差流
-```
-
-**设计优势**：
-- 提升注意力表达能力（更大的 Q 投影维度）
-- 控制 KV Cache 显存（GQA 减少 KV 头数）
-- 平衡 MoE 计算负载（FFN 是主要瓶颈）
-
----
+> 📐 **配置字段分类说明**
+>
+> 按对 30B 推理的影响可分为三类：
+>
+> **① 不影响推理的字段（对应功能未启用）**
+>
+> | 字段 | 值 | 不影响的原因 |
+> |------|-----|-------------|
+> | `intermediate_size` | 6144 | 稠密 MLP 的中间维度，30B 全 MoE 无稠密层被实例化 |
+> | `sliding_window` | null | 滑动窗口注意力未配置 |
+> | `use_sliding_window` | false | 滑动窗口注意力已禁用 |
+> | `max_window_layers` | 48 | 滑动窗口层数，但 `use_sliding_window=false` 故无效 |
+>
+> **② 训练专用字段（推理时不参与计算）**
+>
+> | 字段 | 值 | 用途 |
+> |------|-----|------|
+> | `initializer_range` | 0.02 | 训练时初始化权重的随机范围，推理时已加载固定权重 |
+> | `router_aux_loss_coef` | 0.001 | 路由器负载均衡辅助损失的权重系数，仅训练时使用 |
+> | `output_router_logits` | false | 是否输出路由 logits 给 aux loss 用，推理时为 false |
+>
+> **③ 元数据字段（框架匹配用，不影响数值计算）**
+>
+> | 字段 | 值 | 用途 |
+> |------|-----|------|
+> | `architectures` | `["Qwen3MoeForCausalLM"]` | HuggingFace 根据此字段选择模型类 |
+> | `model_type` | `"qwen3_moe"` | 框架内部模型标识 |
+> | `transformers_version` | `"4.51.0"` | 生成此配置的 transformers 库版本 |
+>
+> 其余字段（如 `hidden_size`、`num_attention_heads`、`num_experts` 等）均直接参与推理计算。
+>
+> ---
+>
+> 📏 **关键数学关系**
+>
+> **注意力维度链**：
+> ```
+> hidden_size=2048 → Q 投影 [2048→4096]   → 32 heads × 128 dim
+>                  → K/V 投影 [2048→512]   → 4 KV heads × 128 dim
+>                  → QKV 合并输出: (32+4+4) × 128 = 5120
+> ```
+>
+> **GQA 比率**：32 Q heads ÷ 4 KV heads = **8** → 每组 8 个 Q head 共享 1 组 KV
+>
+> **MoE 计算量等价**：`top_k × moe_intermediate_size = 8 × 768 = 6144` = `intermediate_size`
+>
+> → 8 个激活专家的矩阵乘法 FLOPs 与一个稠密 MLP（intermediate_size=6144）完全相同
+>
+> **稀疏性**：`num_experts_per_tok ÷ num_experts = 8 ÷ 128 = **6.25%**`
+>
+> **参数量速算**（BF16 内存 = 参数量 × 2 字节）：
+>
+> | 组件 | 公式 | 参数量 | BF16 内存 |
+> |------|------|--------|-----------|
+> | Embedding (×1) | vocab × hidden = 151936 × 2048 | **311M** | 622 MB |
+> | LM Head (×1) | hidden × vocab = 2048 × 151936 | **311M** | 622 MB |
+> | Attention (×48) | (Q+K+V+O) × hidden = (4096+512+512+4096) × 2048 | **18.9M/层** | 37.8 MB/层 |
+> | MoE 专家 (×48) | E × 3 × hidden × moe_inter = 128 × 3 × 2048 × 768 | **604M/层** | 1.21 GB/层 |
+> | MoE 激活 (每 token) | k × 3 × hidden × moe_inter = 8 × 3 × 2048 × 768 | **37.7M** | — |
+> | Router (×48) | hidden × E = 2048 × 128 | **0.26M/层** | 0.5 MB/层 |
+> | RMSNorm (×97) | hidden × 97 = 2048 × 97 | **0.2M 总计** | 0.4 MB |
+> | **模型总计** | Embed + Attn×48 + MoE×48 + Router×48 + LMHead + Norms | **≈ 30.5B** | **≈ 61 GB** |
 
 ## 整体架构图
 
