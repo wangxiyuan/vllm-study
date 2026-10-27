@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>一次请求的 KV Cache 全流程演示</title>
+<style>
+  :root{
+    --bg:#090f1e; --panel:#111a30; --panel2:#17223c; --line:#26324f;
+    --text:#e9effc; --muted:#93a2c4; --accent:#6ea8fe; --accent2:#7ee7c7;
+    --warn:#ffcc66; --bad:#ff7a90; --good:#7ee787;
+    --gqa:#6ea8fe; --mla:#c49bff; --slot:#ffcc66;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1000px 520px at 15% -10%,#1a2a55 0%,var(--bg) 60%);
+       color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}
+  header{max-width:1240px;margin:0 auto;padding:24px 20px 8px}
+  h1{margin:0 0 4px;font-size:23px}
+  .sub{color:var(--muted);font-size:13px}
+  main{max-width:1240px;margin:0 auto;padding:12px 20px 60px}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+  .grow{flex:1 1 320px}
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 14px}
+  label{color:var(--muted);font-size:12px}
+  select,input[type=range]{background:#0c1428;color:var(--text);border:1px solid var(--line);
+       border-radius:8px;padding:6px 8px;font:inherit}
+  input[type=range]{width:130px;accent-color:var(--accent)}
+  button{border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:9px;
+         padding:7px 12px;cursor:pointer}
+  button.primary{background:#2457a6;border-color:#3b73c9}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .steps{display:flex;gap:6px;flex-wrap:wrap}
+  .step{padding:7px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);
+        color:var(--muted);font-size:12px;cursor:pointer}
+  .step.active{color:#fff;border-color:var(--accent);background:#1b2e55}
+  .stepbanner{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#0e1e1b;border:1px solid #245b4d;border-radius:10px;padding:9px 12px;margin:6px 0 12px}
+  .stepbanner b{color:var(--accent2)}
+  .stepbanner .note{color:#a9f0cf}
+  .progress{height:6px;background:#16213a;border-radius:999px;overflow:hidden;flex:1 1 160px;min-width:100px}
+  .progress i{display:block;height:100%;background:linear-gradient(90deg,#3d7bd6,#7ee7c7);transition:width .2s}
+  .tokens{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+  .tok{border:1px solid var(--line);border-radius:9px;padding:7px 9px;background:#0d1730;font-size:12px;min-width:62px;text-align:center}
+  .tok b{display:block;font-size:13px}
+  .tok .p{color:var(--muted);font-size:10px}
+  .tok .s{color:var(--slot);font-size:10px}
+  .tok.new{border-color:var(--accent2);box-shadow:0 0 0 1px #2c6b5c inset}
+  .tok.sampled{border-color:var(--warn);box-shadow:0 0 0 2px #6a5520 inset;background:#241e10}
+  .block{display:grid;grid-template-columns:repeat(16,1fr);gap:4px;margin:8px 0}
+  .cell{height:34px;border:1px solid #2a3a5e;border-radius:5px;background:#0e1830;position:relative;
+        font-size:10px;color:#7f90b3;display:flex;align-items:center;justify-content:center}
+  .cell.used{background:#1d3b63;border-color:#3f6fa8;color:#dbe9ff}
+  .cell.new{background:#245b4d;border-color:#4fae92;color:#dcfff4;box-shadow:0 0 0 1px #4fae92 inset}
+  .cell.frozen{box-shadow:0 0 0 1px #7ee7c7 inset;background:#173a33}
+  .cell span{position:absolute;top:2px;left:4px;opacity:.65}
+  .layers{display:grid;gap:7px;margin-top:8px}
+  .layer{display:grid;grid-template-columns:88px 1fr;gap:8px;align-items:center}
+  .layer .name{font-size:12px;color:var(--muted);cursor:pointer}
+  .layer.sel .name{color:var(--accent2);font-weight:700}
+  .layer .cells{display:grid;grid-template-columns:repeat(16,1fr);gap:3px}
+  .layer .cells .cell{height:22px;font-size:9px}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:11px;margin:8px 0}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+  .formula{background:#0a1124;border:1px dashed #33456d;border-radius:10px;padding:10px 12px;margin:10px 0;
+           font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#cfe0ff;white-space:pre-wrap}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:7px 5px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:11px}
+  .mono{font-family:ui-monospace,Menlo,monospace}
+  .pill{display:inline-block;border-radius:999px;padding:2px 7px;font-size:10px;background:#1b2b4d;color:#bcd0f5}
+  .pill.persist{background:#15362b;color:#a9f0cf}
+  .pill.temp{background:#3a2f18;color:#ffd98a}
+  .note{color:var(--muted);font-size:12px}
+  .insight{border-left:3px solid var(--accent2);padding:8px 12px;background:#0e1e1b;border-radius:0 8px 8px 0;margin:10px 0}
+  .insight b{color:var(--accent2)}
+  .warnbox{border-left:3px solid var(--warn);padding:8px 12px;background:#241e10;border-radius:0 8px 8px 0;margin:10px 0}
+  .explain{min-height:104px}
+  .explain h3{margin:0 0 5px;font-size:15px}
+  @media(max-width:720px){.layer{grid-template-columns:64px 1fr}.block{grid-template-columns:repeat(8,1fr)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>一次请求的 KV Cache 全流程演示</h1>
+  <div class="sub">以“你好，你是谁”为例（假设 tokenizer 切成 6 个 token；形状只跟 T 有关）｜单请求 · 单 group · block_size=16<br>注意：真实 vLLM 中 Prefill 的 forward 与第一次采样在同一个 <span class="mono">EngineCore.step</span> 内完成；这里拆成两步，是为了分别看清 KV 写入和 logits 的 shape。</div>
+</header>
+<main>
+  <div class="controls">
+    <label>cache 类型
+      <select id="kind">
+        <option value="gqa">GQA（Qwen 风格：2 KV heads × 256）</option>
+        <option value="mla">MLA（Kimi/GLM 风格：1 latent head × 576/512）</option>
+      </select>
+    </label>
+    <label>T <input type="range" id="tlen" min="3" max="8" value="6"> <span id="tval">6</span></label>
+    <div class="steps" id="stepBtns"></div>
+    <button class="primary" id="next">下一步 →</button>
+    <button id="reset">重置</button>
+  </div>
+
+  <div class="stepbanner" id="stepBanner"></div>
+
+  <div class="row">
+    <div class="card grow" style="flex:1 1 430px">
+      <div class="sub">① 请求的 token（逻辑位置）</div>
+      <div class="tokens" id="tokens"></div>
+      <div class="sub" style="margin-top:8px">② 这些 token 落在哪个物理 block / slot</div>
+      <div class="formula" id="slotFormula"></div>
+      <div class="note" id="blockLabel"></div>
+      <div class="block" id="blockGrid"></div>
+      <div class="legend">
+        <span><i class="dot" style="background:#1d3b63"></i>已写</span>
+        <span><i class="dot" style="background:#245b4d"></i>本步新写</span>
+        <span><i class="dot" style="background:#0e1830;border:1px solid #2a3a5e"></i>未用</span>
+        <span>block id 42 是“逻辑页”，不是字节地址</span>
+      </div>
+    </div>
+
+    <div class="card grow" style="flex:1 1 380px">
+      <div class="sub">③ 每层都有自己的 page：同一个 block id，不同的物理地址</div>
+      <div class="layers" id="layers"></div>
+      <div class="insight"><b>关键：</b>block table 和 slot_mapping 是“同 group 的所有层共用”的；KV 内容不是。layer 0 的 page 42 和 layer 1 的 page 42 是两块不同的显存。</div>
+      <div class="note">只画 6 层示意；真实 Kimi 是 93 层，DSV4.1 是 40 层。</div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:14px">
+    <div class="card grow" style="flex:1 1 560px">
+      <div class="sub">④ 本步的张量清单（右侧看 shape / 生命周期）</div>
+      <div class="formula" id="formula"></div>
+      <div class="explain" id="explain"></div>
+    </div>
+    <div class="card grow" style="flex:1 1 520px">
+      <div class="sub">⑤ 关键张量：谁是临时，谁是持久</div>
+      <table>
+        <thead><tr><th>张量</th><th>shape</th><th>生命周期</th><th>内容</th></tr></thead>
+        <tbody id="tensorRows"></tbody>
+      </table>
+      <div class="note">cache 的 per-layer 视图是 <span class="mono">[num_blocks, H, block_size, C]</span>（当前代码逻辑布局）；GQA 的 C 里包含 K 和 V，MLA 的 C=latent+rope。<br>表里的 shape 是<b>当前 step 的逻辑切片</b>；真实 buffer 通常是 <span class="mono">input_ids[ max_tokens ]</span>、<span class="mono">block_table[ max_reqs, max_blocks ]</span>、<span class="mono">slot_mapping[ num_groups, max_tokens ]</span>。</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <div class="sub">⑥ 为什么 group 是“跨层”的？</div>
+    <div class="explain" id="groupExplain"></div>
+    <div class="warnbox"><b>例外：</b>DeepSeek V4.1 的 compressed KV 是模型级共享（source 层 2/8/14/20 写，consumer 层读），这是“真的跨层复用内容”；普通 GQA/MLA 不是。Kimi/Qwen/GLM 的 KDA/GDN state 也是每层自己的，不共享。</div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="sub">⑦ 这里没有 <span class="mono">CircularBufferSpec</span>，因为它不是按 token 增长的 paged KV</div>
+    <div class="note">token 级 cache 只覆盖 GQA / MLA；compressor state、indexer tail、QSA ring 用的是 <span class="mono">CircularBufferSpec</span>：每请求 1 个 block，按 <span class="mono">pos % ring</span> 原地覆盖，<span class="mono">uses_slot_mapping=False</span>，不参与前缀缓存。它们的覆盖行为见互动实验室的 **Ring / CircularBuffer** 页签。</div>
+  </div>
+</main>
+
+<script>
+const qs = new URLSearchParams(location.search);
+const state = { step: Math.min(3, Math.max(0, +(qs.get('step')||0))), kind: qs.get('kind')==='mla'?'mla':'gqa', T: Math.min(8, Math.max(3, +(qs.get('t')||6))), layers: 6, B: 16, phys: 42 };
+const $ = (id)=>document.getElementById(id);
+const STEPS = ['请求到达', 'Prefill', '采样', 'Decode 一个 token'];
+
+function slots(){
+  const base = state.phys * state.B;
+  const n = state.step >= 3 ? state.T + 1 : state.T;
+  return Array.from({length:n}, (_,i)=>base+i);
+}
+function usedCount(){
+  if(state.step === 0) return 0;
+  return state.step >= 3 ? state.T + 1 : state.T;
+}
+function tokenLabels(){
+  const base = ['你','好','，','你','是','谁','？','！'];
+  return Array.from({length:state.T}, (_,i)=>base[i] ?? 't'+i);
+}
+function tensorData(){
+  const T = state.T;
+  if(state.step === 2){
+    return [
+      ['hidden_states[-1]', '[1, 2560]', '临时', '只取最后一个位置'],
+      ['logits', '[1, vocab]', '临时', 'lm_head 输出'],
+      ['sampled_token', '[1]', '临时', '从 logits 采样'],
+      ['slot_mapping', '—', '本步无', '采样不写 KV'],
+      ['block_table', '[1, max_blocks]', '持久（每请求）', '不变'],
+      ['kv_cache', `[num_blocks, ${state.kind==='gqa'?'2, 16, 512':'1, 16, 576'}]`, '持久（只读）', '不写，只保留'],
+      ['seq_lens', '[1]', '持久（每请求）', `${T}（不变）`],
+    ];
+  }
+  const n = state.step >= 3 ? 1 : T;
+  const allocated = state.step > 0;
+  const slotTxt = allocated
+    ? (state.step >= 3 ? `${state.phys*state.B+T}` : `${state.phys*state.B}..${state.phys*state.B+T-1}`)
+    : '未分配';
+  if(state.kind === 'gqa'){
+    return [
+      ['input_ids', `[${n}]`, '临时', 'token id（不是 KV）'],
+      ['positions', `[${n}]`, '临时', state.step>=3 ? `[${T}]` : `0..${T-1}`],
+      ['slot_mapping', `[${n}]`, '临时/复用', `${slotTxt}（storage [G,max_tokens]）`],
+      ['block_table', `[1, max_blocks]`, '持久（每请求）', allocated ? `[[${state.phys}, …]]` : '空'],
+      ['q', `[${n}, 24, 256]`, '临时', '每层重新算（Qwen Hq=24）'],
+      ['k / v', `[${n}, 2, 256]`, '临时', '每层重新算，写入 cache'],
+      ['kv_cache', `[num_blocks, 2, 16, 512]`, '持久（启动时）', '每层一份；K 256 + V 256 打包在 C 里'],
+      ['attn_out', `[${n}, 24, 256]`, '临时', '每层输出'],
+      ['logits', `[1, vocab]`, '临时', '只取最后一个 token'],
+    ];
+  }
+  return [
+    ['input_ids', `[${n}]`, '临时', 'token id（不是 KV）'],
+    ['positions', `[${n}]`, '临时', state.step>=3 ? `[${T}]` : `0..${T-1}`],
+    ['slot_mapping', `[${n}]`, '临时/复用', `${slotTxt}（storage [G,max_tokens]）`],
+    ['block_table', `[1, max_blocks]`, '持久（每请求）', allocated ? `[[${state.phys}, …]]` : '空'],
+    ['kv_c_normed', `[${n}, 512]`, '临时', '压缩后的 latent'],
+    ['k_pe', `[${n}, 1, 64]`, '临时', 'RoPE 部分'],
+    ['q', `[${n}, 96, 192]`, '临时', '96 个 Q 头（Kimi）'],
+    ['kv_cache', `[num_blocks, 1, 16, 576]`, '持久（启动时）', 'Kimi 576 = 512+64；GLM 512（无 rope）'],
+    ['attn_out', `[${n}, 96, 128]`, '临时', '先对 latent 做 attention'],
+    ['logits', `[1, vocab]`, '临时', '只取最后一个 token'],
+  ];
+}
+function render(){
+  const T = state.T, used = usedCount();
+  $('tval').textContent = T;
+  // tokens
+  const tk = $('tokens'); tk.innerHTML = '';
+  tokenLabels().forEach((label,i)=>{
+    const el=document.createElement('div');
+    el.className='tok'+(state.step>=3 && i===T ? ' new':'')+(state.step===2 && i===T-1 ? ' sampled':'');
+    const slot = state.phys*state.B+i;
+    el.innerHTML = `<b>${label}</b><span class="p">pos ${i}</span><span class="s">${state.step===0?'未分配':'slot '+slot}</span>`;
+    tk.appendChild(el);
+  });
+  if(state.step>=3){
+    const el=document.createElement('div'); el.className='tok new';
+    el.innerHTML=`<b>新 token</b><span class="p">pos ${T}</span><span class="s">slot ${state.phys*state.B+T}</span>`;
+    tk.appendChild(el);
+  }
+  // formula
+  const p = state.step>=3 ? T : T-1;
+  $('slotFormula').textContent = state.step===2
+    ? `采样：不写 slot_mapping。\nKV 672..677 已写满，本步只读。\n取 pos ${T-1} 的 hidden -> logits。`
+    : `block_table[req] = [${state.step===0?'未分配':state.phys}]   B = ${state.B}
+slot(p) = block_table[p // B] * B + (p % B)
+${state.step===0 ? '还没有分配 slot。' :
+`token pos ${p} -> block ${state.phys}, offset ${p%state.B}, slot ${state.phys*state.B + (p%state.B)}`}`;
+  // block grid
+  $('blockLabel').textContent = state.step===0 ? 'block 尚未分配' : `block ${state.phys} · ${state.B} slots`;
+  const bg=$('blockGrid'); bg.innerHTML='';
+  for(let i=0;i<state.B;i++){
+    const el=document.createElement('div');
+    const isNew = (state.step===1 || state.step===3) && i===used-1;
+    const frozen = state.step===2 && i<used;
+    el.className='cell'+(i<used?' used':'')+(isNew?' new':'')+(frozen?' frozen':'');
+    el.innerHTML=`<span>${i}</span>${i<used?'K/V':''}`;
+    bg.appendChild(el);
+  }
+  // layers
+  const lbox=$('layers'); lbox.innerHTML='';
+  for(let l=0;l<state.layers;l++){
+    const row=document.createElement('div'); row.className='layer'+(l===0?' sel':'');
+    const nm=document.createElement('div'); nm.className='name'; nm.textContent=`layer ${l}`;
+    const cells=document.createElement('div'); cells.className='cells';
+    for(let i=0;i<state.B;i++){
+      const c=document.createElement('div');
+      const isNew = (state.step===1 || state.step===3) && i===used-1;
+      const frozen = state.step===2 && i<used;
+      c.className='cell'+(i<used?' used':'')+(isNew?' new':'')+(frozen?' frozen':'');
+      cells.appendChild(c);
+    }
+    row.appendChild(nm); row.appendChild(cells); lbox.appendChild(row);
+  }
+  // formula / explanation
+  const isPrefill = state.step===1, isDecode=state.step===3, isSampling=state.step===2;
+  const allocated = state.step > 0;
+  const slotFormulaTxt = !allocated ? '未分配'
+    : (isDecode ? String(state.phys*state.B+T)
+                : `${state.phys*state.B}..${state.phys*state.B+T-1}`);
+  $('formula').textContent = isSampling
+    ? `hidden_states[-1] [1, 2560]   # 只取 pos ${T-1}
+logits           [1, vocab]   # lm_head
+sampled_token    [1]          # 采样结果
+slot_mapping     —            # 本步不写 KV
+block_table      [1, max_blocks] # [[${state.phys}, …]]
+cache (per layer) [num_blocks, ${state.kind==='gqa'?'2, 16, 512':'1, 16, 576'}]  # 只读`
+    : `input_ids        [${isDecode?1:T}]        # ${isDecode?'新 token':'prompt token'}
+positions        [${isDecode?1:T}]        # ${isDecode?T:'0..'+(T-1)}
+slot_mapping     [${isDecode?1:T}]        # ${slotFormulaTxt}
+block_table      [1, max_blocks] # ${allocated?`[[${state.phys}, …]]`:'空'}
+seq_lens         [1]         # ${isDecode?T+1:(state.step===0?0:T)}
+cache (per layer) [num_blocks, ${state.kind==='gqa'?'2, 16, 512':'1, 16, 576'}]`;
+  const ex=$('explain');
+  if(state.step===0){
+    ex.innerHTML=`<h3>请求到达：只有 token，没有 KV</h3>
+      <div class="note">tokenizer 把“你好，你是谁”变成 ${T} 个 token。此时只有 input_ids、positions；KV cache 还没分配，block_table 为空。</div>`;
+  }else if(state.step===1){
+    ex.innerHTML=`<h3>Prefill：一次写入 ${T} 个 token 的 KV</h3>
+      <div class="note">调度器给这个请求分配 1 个物理 block（id=42），覆盖 16 个 slot。${T} 个 token 依次算出 K/V，通过 slot_mapping 写到 42×16+0..${T-1}。每一层都写自己那份 cache，但复用同一张 block_table 和 slot_mapping。</div>`;
+  }else if(state.step===2){
+    ex.innerHTML=`<h3>采样：只用最后一个位置的 logits</h3>
+      <div class="note">prefill 的 attention 输出里，只有最后一个 token 的 hidden state 需要过 lm_head 得到 logits（[1, vocab]）。前面 ${T-1} 个 token 的 KV 不丢，继续留在 cache 里给 decode 用。</div>`;
+  }else{
+    ex.innerHTML=`<h3>Decode：追加 1 个 token</h3>
+      <div class="note">新 token 的 position=${T}，slot=${state.phys*state.B+T}。每层只算 1 个 K/V，写到同一个 block 的下一个 slot；attention 读 0..${T} 共 ${T+1} 个位置。block_table 没变，变的是 seq_lens 和 num_computed_tokens。</div>`;
+  }
+  // tensor rows
+  const rows=tensorData();
+  $('tensorRows').innerHTML = rows.map(([name,shape,life,content])=>{
+    const cls = life.includes('持久') ? 'persist' : 'temp';
+    return `<tr><td class="mono">${name}</td><td class="mono">${shape}</td>
+      <td><span class="pill ${cls}">${life}</span></td><td class="note">${content}</td></tr>`;
+  }).join('');
+  // step buttons
+  $('stepBtns').innerHTML = STEPS.map((s,i)=>`<div class="step${i===state.step?' active':''}" data-i="${i}">${i}. ${s}</div>`).join('');
+  document.querySelectorAll('.step').forEach(x=>x.onclick=()=>{state.step=+x.dataset.i; render();});
+  $('next').disabled = state.step>=3;
+  $('next').textContent = state.step===0 ? 'Prefill →' : state.step===1 ? '采样 →' : state.step===2 ? 'Decode →' : '完成';
+  const bannerText = [
+    '还没分配 block，只有 token/positions。',
+    `分配 block ${state.phys}，写入 ${T} 个 slot；每层一份 page。`,
+    `不跑 forward：只取 pos ${T-1} 的 hidden 算 logits，KV 变只读。`,
+    `新 token pos ${T}，slot ${state.phys*state.B+T}；每层追加 1 个。`,
+  ][state.step];
+  $('stepBanner').innerHTML = `<b>Step ${state.step}/4 · ${STEPS[state.step]}</b>
+    <span class="note">${bannerText}</span>
+    <span class="progress"><i style="width:${(state.step+1)/4*100}%"></i></span>`;
+  // group explain
+  $('groupExplain').innerHTML = `
+    <p>一个 <span class="mono">KVCacheGroupSpec</span> 里有很多层。调度器分配一个 <b>block id</b>（例如 42）时，
+    这个 id 在 group 的每一层都对应一个 page；它们通过 <span class="mono">layer_stride</span> 错开，内容各不相同。</p>
+    <p>所以“跨层分组”共享的是：<b>block id 编号、block table、slot_mapping、seq_lens 这些元数据</b>，
+    不是 K/V 内容。这样一张 block table 就能同时服务几十层，分配/回收只需要操作一个 id。</p>
+    <p>不同 spec（full vs SWA vs KDA state）的层不能共享同一张表：它们的“一个 block 代表多少 token / 生命周期”不同，所以拆成多个 group。</p>`;
+}
+
+$('kind').value=state.kind;
+$('tlen').value=state.T;
+$('kind').onchange=(e)=>{state.kind=e.target.value; render();};
+$('tlen').oninput=(e)=>{state.T=+e.target.value; if(state.step>=3) state.step=1; render();};
+$('next').onclick=()=>{if(state.step<3){state.step++; render();}};
+$('reset').onclick=()=>{state.step=0; render();};
+render();
+</script>
+</body>
+</html>

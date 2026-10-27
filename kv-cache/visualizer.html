@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vLLM KV Cache 互动实验室</title>
+<style>
+  :root{
+    --bg:#0b1020; --panel:#121a31; --panel2:#17213d; --line:#26324f;
+    --text:#e8eefc; --muted:#91a0c2; --accent:#6ea8fe; --accent2:#7ee7c7;
+    --warn:#ffcc66; --bad:#ff7a90; --good:#7ee787;
+    --mla:#6ea8fe; --linear:#7ee7c7; --swa:#c49bff; --comp:#ffb86b;
+    --idx:#ff7ab6; --ring:#9aa7c7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 20% -10%,#1a2a55 0%,var(--bg) 55%);color:var(--text);
+       font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",sans-serif}
+  header{padding:26px 22px 14px;max-width:1180px;margin:0 auto}
+  h1{margin:0 0 6px;font-size:24px;letter-spacing:.3px}
+  .sub{color:var(--muted);font-size:13px}
+  .tabs{display:flex;gap:8px;flex-wrap:wrap;padding:0 22px;max-width:1180px;margin:0 auto 14px}
+  .tab{padding:8px 14px;border:1px solid var(--line);border-radius:999px;background:var(--panel);
+       color:var(--muted);cursor:pointer;user-select:none}
+  .tab.active{color:var(--text);border-color:var(--accent);background:#182747;box-shadow:0 0 0 1px #2e4f8a inset}
+  main{max-width:1180px;margin:0 auto;padding:0 22px 60px}
+  section{display:none}
+  section.active{display:block}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+  .grow{flex:1 1 260px}
+  .modelbtns{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .mbtn{padding:8px 12px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);
+        color:var(--muted);cursor:pointer}
+  .mbtn.active{color:#fff;border-color:var(--accent);background:#1c2d55}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .stat b{display:block;font-size:17px;margin-top:2px}
+  .stat span{color:var(--muted);font-size:12px}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin:8px 0 12px}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .layerstrip{display:grid;grid-template-columns:repeat(auto-fill,minmax(22px,1fr));gap:4px;
+              padding:10px;background:#0d1428;border:1px solid var(--line);border-radius:12px}
+  .cell{height:34px;border-radius:5px;background:#1e2a47;border:1px solid #2b3a5e;cursor:pointer;
+        position:relative;transition:transform .08s, box-shadow .08s}
+  .cell:hover{transform:translateY(-2px);box-shadow:0 4px 12px #0008}
+  .cell.sel{outline:2px solid #fff}
+  .cell.mla{background:linear-gradient(180deg,#2c4f88,#203a67);border-color:#3c65a8}
+  .cell.linear{background:linear-gradient(180deg,#1d4d43,#183b36);border-color:#2c6b5c}
+  .cell.swa{background:linear-gradient(180deg,#4a3a72,#35294f);border-color:#6b52a3}
+  .cell.comp2{background:linear-gradient(180deg,#6a4a22,#4a3418);border-color:#a06a2a}
+  .cell.comp1{background:linear-gradient(180deg,#75572a,#513c1c);border-color:#b37b2e}
+  .cell.consumer{opacity:.55;border-style:dashed}
+  .cell .star{position:absolute;right:2px;top:1px;font-size:9px;color:#ffe08a}
+  .cell .idx{position:absolute;left:2px;bottom:0;font-size:8px;color:#ff9fd0}
+  .cell .num{position:absolute;left:3px;top:1px;font-size:8px;color:#ffffff88}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .chip{border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:5px 10px;font-size:12px;color:var(--muted)}
+  .detail{margin-top:12px;min-height:96px}
+  .detail h3{margin:0 0 6px;font-size:15px}
+  .kv{display:grid;grid-template-columns:140px 1fr;gap:4px 10px;font-size:13px}
+  .kv div:nth-child(odd){color:var(--muted)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .controls{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:10px 0}
+  label{color:var(--muted);font-size:12px}
+  select,input[type=number]{background:#0d1428;color:var(--text);border:1px solid var(--line);border-radius:8px;
+       padding:6px 8px;font:inherit}
+  input[type=range]{width:180px;accent-color:var(--accent)}
+  button.primary{background:#2457a6;border:1px solid #3b73c9;color:#fff;border-radius:9px;padding:7px 12px;cursor:pointer}
+  button.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:7px 12px;cursor:pointer}
+  .blocks{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:6px;margin:10px 0}
+  .blk{border:1px solid var(--line);border-radius:8px;padding:6px;background:#0f1830;font-size:11px;cursor:pointer}
+  .blk .id{font-weight:700;color:var(--accent2)}
+  .blk .range{color:var(--muted)}
+  .blk.shared{border-color:var(--warn);background:#2a2314}
+  .blk.active{border-color:#fff;box-shadow:0 0 0 1px #fff inset}
+  .formula{background:#0a1124;border:1px dashed #33456d;border-radius:10px;padding:10px 12px;margin:10px 0;
+           font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#cfe0ff;overflow:auto;white-space:pre-wrap}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px}
+  .bar{height:10px;border-radius:999px;background:#1c2745;overflow:hidden;min-width:80px}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,#3d7bd6,#7ee7c7)}
+  .ringgrid{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin:10px 0}
+  .ringgrid .cell{height:44px;font-size:11px}
+  .ringgrid .cell.writing{background:#245b4d;border-color:#7ee7c7;box-shadow:0 0 0 2px #245b4d inset;color:#dcfff4}
+  .ringgrid .cell.used{background:#1d3b63;border-color:#3f6fa8;color:#dbe9ff}
+  .quizbox{max-width:780px}
+  .q{font-size:16px;margin:10px 0 4px}
+  .opts{display:grid;gap:8px;margin:12px 0}
+  .opt{text-align:left;padding:10px 12px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);
+       color:var(--text);cursor:pointer}
+  .opt:hover{border-color:#4b6a9e}
+  .opt.ok{border-color:var(--good);background:#133024}
+  .opt.no{border-color:var(--bad);background:#321821}
+  .feedback{min-height:24px;color:var(--muted);margin:6px 0}
+  .score{color:var(--accent2);font-weight:700}
+  .note{color:var(--muted);font-size:12px;margin-top:8px}
+  .pill{display:inline-block;padding:2px 7px;border-radius:999px;background:#1b2b4d;color:#bcd0f5;font-size:11px;margin-left:6px}
+  @media (max-width:640px){.kv{grid-template-columns:110px 1fr} h1{font-size:20px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>vLLM KV Cache 互动实验室</h1>
+  <div class="sub">DeepSeek-V4.1-Flash · Kimi-K3 · Qwen3.8-Flash-Next · GLM-5.3-Flash ｜ 基于 commit 4e964b2623 的近似模型</div>
+</header>
+
+<nav class="tabs">
+  <div class="tab active" data-tab="map">① 模型地图</div>
+  <div class="tab" data-tab="paging">② 分页实验</div>
+  <div class="tab" data-tab="calc">③ 显存计算器</div>
+  <div class="tab" data-tab="ring">⑤ Ring / CircularBuffer</div>
+  <div class="tab" data-tab="quiz">⑥ 自测</div>
+</nav>
+
+<main>
+  <!-- ================= MODEL MAP ================= -->
+  <section id="map" class="active">
+    <div class="modelbtns" id="modelBtns"></div>
+    <div class="stats" id="stats"></div>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--mla)"></i>MLA / full attention</span>
+      <span><i class="dot" style="background:var(--linear)"></i>linear attention (KDA/GDN)</span>
+      <span><i class="dot" style="background:var(--swa)"></i>SWA cache</span>
+      <span><i class="dot" style="background:var(--comp)"></i>compressed KV source</span>
+      <span>★ = compressed source</span>
+      <span>虚线 = consumer（只读）</span>
+      <span>• = indexer source</span>
+    </div>
+    <div class="layerstrip" id="layerStrip"></div>
+    <div class="chips" id="groupChips"></div>
+    <div class="card detail" id="layerDetail">
+      <h3>点一个层</h3>
+      <div class="note">每格是一层。颜色代表它拥有的 cache 类型；点开看 spec、字节和是否共享。</div>
+    </div>
+    <div class="note">提示：DSV4.1 的橙色/棕色格子并不都拥有 compressed KV —— ★ 的 4 层才是 source，其余只是“消费者”；每一层都另有一份 SWA。</div>
+  </section>
+
+  <!-- ================= PAGING ================= -->
+  <section id="paging">
+    <div class="controls">
+      <label>模型 <select id="pModel">
+        <option value="ds">DeepSeek-V4.1-Flash</option>
+        <option value="kimi">Kimi-K3</option>
+        <option value="qwen">Qwen3.8-Flash-Next</option>
+        <option value="glm">GLM-5.3-Flash</option>
+      </select></label>
+      <label>block_size <select id="pBlock"><option>8</option><option selected>16</option><option>32</option><option>64</option></select></label>
+      <label>dtype <select id="pDtype"><option value="bf16">bf16</option><option value="fp8">fp8</option></select></label>
+      <label>context <input type="range" id="pCtx" min="16" max="256" step="16" value="64"> <span id="pCtxVal"></span></label>
+      <button class="primary" id="pAppend">追加 16 token</button>
+      <button class="ghost" id="pReset">重置</button>
+    </div>
+    <div class="row">
+      <div class="card grow">
+        <div class="sub">逻辑位置 → 物理 block：点一个 block 或拖动位置</div>
+        <div class="blocks" id="pBlocks"></div>
+        <div class="formula" id="pFormula"></div>
+      </div>
+      <div class="card grow">
+        <div class="sub">这一层的 KV 估算</div>
+        <div class="kv" id="pInfo"></div>
+        <div class="note">这里用“一个普通 paged 层”演示 slot 公式；DSV4.1 的 SWA 只保留窗口 128，compressed 层还有 tokens_per_state。</div>
+        <div class="note"><b>任务：</b>① 先手算 p=45 的 slot，再点 block / 拖位置验证；② 把 block_size 改成 32，预测 slot 和 block 数怎么变；③ 把 dtype 切到 fp8，看“本请求 KV”减半；④ 解释黄色块为什么是 shared。</div>
+      </div>
+    </div>
+    <div class="controls">
+      <label>位置 p <input type="range" id="pPos" min="0" max="63" value="45"> <span id="pPosVal"></span></label>
+    </div>
+  </section>
+
+  <!-- ================= CALC ================= -->
+  <section id="calc">
+    <div class="card">
+      <div class="controls">
+        <label>可用 KV 显存 (GiB) <input type="number" id="cMem" value="40" min="1" step="1" style="width:90px"></label>
+        <label>上下文 token <input type="number" id="cCtx" value="32768" min="1024" step="1024" style="width:110px"></label>
+        <label>TP <select id="cTp"><option>1</option><option>2</option><option>4</option><option selected>8</option><option>16</option></select></label>
+        <label>dtype <select id="cDtype"><option value="bf16">bf16</option><option value="fp8">fp8</option></select></label>
+      </div>
+      <table>
+        <thead><tr><th>模型</th><th>每请求 KV（近似）</th><th>最大并发</th><th style="width:34%">相对量级</th></tr></thead>
+        <tbody id="calcRows"></tbody>
+      </table>
+      <div class="note">粗算：DSV4.1 只算 4 个 compressed source + 40 层 SWA + 8 个 indexer；Kimi/Qwen/GLM 的线性层按 TP 分片的固定 state 估算。真实值受 packing、block 对齐、前缀共享影响。</div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div class="card grow"><h3 style="margin:0 0 6px">读图练习</h3>
+        <div class="note" id="calcHint"></div></div>
+      <div class="card grow"><h3 style="margin:0 0 6px">三个结论</h3>
+        <div class="note">① Kimi/GLM/Qwen 的长上下文成本主要在少量 attention 层；线性层是固定 state。<br>
+        ② DSV4.1 靠 4 层共享 compressed KV，把 40 层的长上下文成本压到“4 层量级”。<br>
+        ③ 同样 128k，MLA 的 576 维并不一定比 GQA 2×256 贵；要看层数和是否共享。</div></div>
+    </div>
+  </section>
+
+  <!-- ================= RING ================= -->
+  <section id="ring">
+    <div class="card">
+      <div class="controls">
+        <label>场景 <select id="rKind">
+          <option value="ds">DSV4.1 compressor state</option>
+          <option value="glm">GLM-5.3 indexer tail</option>
+          <option value="qwen">Qwen3.8 QSA ring</option>
+        </select></label>
+        <label>ring 容量 <select id="rRing"><option>4</option><option selected>8</option><option>16</option><option>32</option></select></label>
+        <label>位置 p <input type="range" id="rPos" min="0" max="31" value="5"> <span id="rPosVal">5</span></label>
+        <button class="primary" id="rAppend">写入下一个 token</button>
+        <button class="ghost" id="rReset">重置</button>
+      </div>
+      <div class="row">
+        <div class="card grow">
+          <div class="sub">每请求只有 1 个 block；按 <span class="mono">pos % ring</span> 原地覆盖</div>
+          <div class="ringgrid" id="rGrid"></div>
+          <div class="formula" id="rFormula"></div>
+        </div>
+        <div class="card grow">
+          <div class="sub">spec 与关键字段</div>
+          <div class="kv" id="rInfo"></div>
+          <div class="note">ring 是 scratch/state：<b>不参与前缀缓存</b>，<b>不生成 per-token slot_mapping</b>，<b>max_num_blocks_per_req = 1</b>。它不在主 KV 的 block table 里按 token 增长。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= QUIZ ================= -->
+  <section id="quiz">
+    <div class="card quizbox">
+      <div class="sub">随机 6 题 · 点选项立即判分</div>
+      <div class="q" id="qText">准备中…</div>
+      <div class="opts" id="qOpts"></div>
+      <div class="feedback" id="qFeedback"></div>
+      <div class="controls">
+        <button class="primary" id="qNext">下一题</button>
+        <span class="score" id="qScore">0 / 0</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const MODELS = {
+  ds: {
+    key:'ds', name:'DeepSeek-V4.1-Flash', short:'DSV4.1', params:'552B', active:'8B 输入 / 16B 输出',
+    layers:40, ctx:'1M', color:'#6ea8fe',
+    kind(i){ if(i<2) return 'swa'; if(i<20) return 'comp2'; return 'comp1'; },
+    sources:[2,8,14,20], indexSources:[2,8,14,20,24,28,32,36],
+    groups:['SWA ×40','compressed r2: 3 sources','compressed r1: 1 source','indexer r2: 3 sources','indexer r1: 5 sources','compressor ×4'],
+    note(i){
+      const k=this.kind(i), src=this.sources.includes(i), idx=this.indexSources.includes(i);
+      if(k==='swa') return `纯 SWA 层；只有窗口 128 的 SlidingWindowMLASpec。`;
+      if(src) return `compressed KV source（ratio ${k==='comp2'?2:1}）；它是这组 4 个 source 之一，后面的 consumer 读它的 cache。`;
+      return `消费者层：own SWA，但 get_kv_cache_spec() 返回 None；compressed KV 读最近的上游 source。`;
+    }
+  },
+  kimi: {
+    key:'kimi', name:'Kimi-K3', short:'Kimi K3', params:'2.8T', active:'104B',
+    layers:93, ctx:'1M', color:'#7ee7c7',
+    full:[3,7,11,15,19,23,27,31,35,39,43,47,51,55,59,63,67,71,75,79,83,87,91,92],
+    kind(i){ return this.full.includes(i) ? 'mla' : 'linear'; },
+    groups:['Gated MLA ×24','KDA ×69'],
+    note(i){
+      return this.full.includes(i)
+        ? `Gated MLA：MLAAttentionSpec，head_size=512+64=576，num_kv_heads=1，bf16 约 1152 B/token。`
+        : `KDA：MambaSpec（conv + recurrent state），固定大小，不随序列长度增长。`;
+    }
+  },
+  qwen: {
+    key:'qwen', name:'Qwen3.8-Flash-Next', short:'Qwen3.8', params:'≈180B', active:'6B（主干）',
+    layers:48, ctx:'262k', color:'#ffb86b',
+    kind(i){ return i%4===3 ? 'mla' : 'linear'; },
+    groups:['GQA ×12','QSA compressed ×12','QSA ring ×12','GDN ×36','PLE ×1'],
+    note(i){
+      return this.kind(i)==='mla'
+        ? `Qwen Sparse Attention 的 full attention：FullAttentionSpec，GQA 2 个 KV 头 × 256；另有 QSA compressed/ring side cache。`
+        : `GDN（Gated DeltaNet）：MambaSpec，固定 state；第 2 层还带一个 PLE short-conv state。`;
+    }
+  },
+  glm: {
+    key:'glm', name:'GLM-5.3-Flash', short:'GLM-5.3', params:'320B', active:'18B',
+    layers:45, ctx:'1M', color:'#c49bff',
+    kind(i){ return i%4===3 ? 'mla' : 'linear'; },
+    groups:['sparse MLA ×11','indexer kpool ×11','indexer tail ×11','KDA ×34'],
+    note(i){
+      return this.kind(i)==='mla'
+        ? `Sparse MLA：MLAAttentionSpec，head_size=512（qk_rope=0），另有 indexer kpool + tail ring。`
+        : `KDA：MambaSpec，固定 state；和 Kimi 的 KDA 同类，但 head 数/层数不同。`;
+    }
+  }
+};
+
+let current = 'ds';
+const $ = (id)=>document.getElementById(id);
+const fmt = (n)=>{
+  if(n<1024) return n.toFixed(0)+' B';
+  if(n<1024**2) return (n/1024).toFixed(1)+' KiB';
+  if(n<1024**3) return (n/1024**2).toFixed(1)+' MiB';
+  return (n/1024**3).toFixed(2)+' GiB';
+};
+const dtypeBytes = (d)=> d==='fp8' ? 1 : 2;
+
+// ---------- model map ----------
+function buildModelButtons(){
+  const box=$('modelBtns'); box.innerHTML='';
+  Object.values(MODELS).forEach(m=>{
+    const b=document.createElement('button');
+    b.className='mbtn'+(m.key===current?' active':'');
+    b.textContent=m.short;
+    b.onclick=()=>{current=m.key; buildModelButtons(); renderMap(); const pm=$('pModel'); if(pm) pm.value=current;};
+    box.appendChild(b);
+  });
+}
+function renderMap(){
+  const m=MODELS[current];
+  $('stats').innerHTML = `
+    <div class="stat"><span>总参数</span><b>${m.params}</b></div>
+    <div class="stat"><span>激活参数</span><b>${m.active}</b></div>
+    <div class="stat"><span>层数</span><b>${m.layers}</b></div>
+    <div class="stat"><span>最大上下文</span><b>${m.ctx}</b></div>`;
+  const strip=$('layerStrip'); strip.innerHTML='';
+  for(let i=0;i<m.layers;i++){
+    const k=m.kind(i);
+    const el=document.createElement('div');
+    el.className='cell '+k;
+    el.dataset.i=i;
+    el.innerHTML=`<span class="num">${i}</span>`;
+    if(m.sources && m.sources.includes(i)) el.insertAdjacentHTML('beforeend','<span class="star">★</span>');
+    if(m.indexSources && m.indexSources.includes(i)) el.insertAdjacentHTML('beforeend','<span class="idx">•</span>');
+    if(current==='ds' && (k==='comp2'||k==='comp1') && !m.sources.includes(i)) el.classList.add('consumer');
+    el.onclick=()=>selectLayer(i, el);
+    strip.appendChild(el);
+  }
+  const chips=$('groupChips'); chips.innerHTML='';
+  m.groups.forEach(g=>{const s=document.createElement('span');s.className='chip';s.textContent=g;chips.appendChild(s);});
+  $('layerDetail').innerHTML='<h3>点一个层</h3><div class="note">每格是一层。颜色代表它拥有的 cache 类型；点开看 spec、字节和是否共享。</div>';
+}
+function selectLayer(i, el){
+  document.querySelectorAll('.cell.sel').forEach(x=>x.classList.remove('sel'));
+  el.classList.add('sel');
+  const m=MODELS[current]; const k=m.kind(i);
+  const dsConsumer = current==='ds' && (k==='comp2'||k==='comp1') && !m.sources.includes(i);
+  let spec = 'MLAAttentionSpec';
+  if(k==='linear') spec = 'MambaSpec';
+  else if(k==='swa') spec = 'SlidingWindowMLASpec';
+  else if(k==='comp2'||k==='comp1') spec = dsConsumer ? 'SlidingWindowMLASpec（own）' : 'SlidingWindowMLASpec + MLAAttentionSpec + compressor';
+  else if(current==='qwen') spec = 'FullAttentionSpec';
+  let per = '≈ 1024 B/token (512×2, bf16)';
+  if(k==='linear') per = '固定 state（不随 token 增长）';
+  else if(k==='swa') per = '≈ 584 B/token（fp8 packed）';
+  else if(k==='comp2'||k==='comp1') {
+    per = dsConsumer ? 'own SWA 584 B/token；compressed 读 source' :
+          (k==='comp2' ? 'SWA 584 + compressed 584/2 tokens' : 'SWA 584 + compressed 584/token');
+  } else if(current==='kimi') per = '≈ 1152 B/token (576×2, bf16)';
+  else if(current==='qwen') per = '≈ 2048 B/token (2×256×2, bf16)';
+  $('layerDetail').innerHTML = `
+    <h3>layer ${i} <span class="pill">${spec}</span></h3>
+    <div class="kv">
+      <div>类型</div><div>${k}</div>
+      <div>每 token</div><div>${per}</div>
+      <div>说明</div><div>${m.note(i)}</div>
+    </div>`;
+}
+
+// ---------- paging ----------
+let pCtx = 64;
+function modelOptions(sel){
+  sel.innerHTML = Object.values(MODELS).map(m=>`<option value="${m.key}">${m.name}</option>`).join('');
+  sel.value = current;
+}
+function pageBytes(){
+  const key=$('pModel').value||'ds'; const m=MODELS[key], d=$('pDtype').value;
+  if(m.key==='ds') return d==='fp8' ? 584 : 1024;
+  if(m.key==='kimi') return 576*dtypeBytes(d);
+  if(m.key==='qwen') return 2*256*2*dtypeBytes(d);
+  return 512*dtypeBytes(d);
+}
+function renderPaging(){
+  const key=$('pModel').value||'ds'; const m=MODELS[key], B=parseInt($('pBlock').value), d=$('pDtype').value;
+  const nBlocks=Math.ceil(pCtx/B);
+  const shared=2;
+  const blocks=$('pBlocks'); blocks.innerHTML='';
+  const maxShow=Math.min(nBlocks, 24);
+  for(let b=0;b<maxShow;b++){
+    const start=b*B, end=Math.min(pCtx, start+B)-1;
+    const phys = b<shared ? [4,2][b] : 10 + ((b*7+3)%50);
+    const el=document.createElement('div');
+    el.className='blk'+(b<shared?' shared':'');
+    el.dataset.b=b;
+    el.innerHTML=`<div class="id">phys ${phys}</div><div class="range">tok ${start}–${end}</div>${b<shared?'<div class="range">shared prefix</div>':''}`;
+    el.onclick=()=>{ $('pPos').value=start; renderPos(); };
+    blocks.appendChild(el);
+  }
+  if(nBlocks>maxShow){
+    const el=document.createElement('div'); el.className='blk'; el.textContent=`… 还有 ${nBlocks-maxShow} 块`;
+    blocks.appendChild(el);
+  }
+  $('pCtxVal').textContent = pCtx+' tokens';
+  $('pPos').max = Math.max(0,pCtx-1);
+  $('pPos').value = Math.min(parseInt($('pPos').value||0), pCtx-1);
+  renderPos();
+}
+function renderPos(){
+  const key=$('pModel').value||'ds'; const m=MODELS[key], B=parseInt($('pBlock').value), d=$('pDtype').value;
+  const p=parseInt($('pPos').value), b=Math.floor(p/B), off=p%B;
+  const phys = b<2 ? [4,2][b] : 10 + ((b*7+3)%50);
+  const slot=phys*B+off;
+  $('pPosVal').textContent = p;
+  document.querySelectorAll('.blk').forEach(x=>x.classList.remove('active'));
+  const el=document.querySelector(`.blk[data-b="${b}"]`); if(el) el.classList.add('active');
+  $('pFormula').textContent =
+`p = ${p}, B = ${B}
+block_idx = p // B = ${b}
+offset    = p %  B = ${off}
+phys_id   = block_table[${b}] = ${phys}
+slot      = phys_id * B + offset = ${slot}`;
+  const bytes = pCtx*pageBytes();
+  $('pInfo').innerHTML = `
+    <div>层类型</div><div>${m.key==='ds'?'SWA / compressed（示意用普通 paged 公式）':'MLA / GQA'}</div>
+    <div>每 token</div><div>${fmt(pageBytes())}</div>
+    <div>本请求 KV</div><div>${fmt(bytes)}</div>
+    <div>逻辑 block 数</div><div>${Math.ceil(pCtx/B)}</div>
+    <div>前缀命中</div><div>前 2 块与其他请求共享（黄色）</div>`;
+}
+function initPaging(){
+  modelOptions($('pModel'));
+  $('pModel').onchange=renderPaging;
+  $('pBlock').onchange=renderPaging;
+  $('pDtype').onchange=renderPaging;
+  $('pCtx').oninput=(e)=>{pCtx=parseInt(e.target.value); renderPaging();};
+  $('pPos').oninput=renderPos;
+  $('pAppend').onclick=()=>{pCtx=Math.min(256,pCtx+16); $('pCtx').value=pCtx; renderPaging();};
+  $('pReset').onclick=()=>{pCtx=64; $('pCtx').value=64; $('pPos').value=45; renderPaging();};
+  renderPaging();
+}
+
+// ---------- calculator ----------
+const STATE = { kimi:0.78, qwen:0.38, glm:0.52 }; // MiB per layer at TP=8
+function stateBytes(m, tp){
+  if(!(m.key in STATE)) return 0;
+  return STATE[m.key]*1024*1024*(8/tp);
+}
+function requestBytes(m, ctx, dtype, tp){
+  const b=dtypeBytes(dtype);
+  if(m.key==='ds'){
+    const swa=40*Math.min(ctx,128)*(dtype==='fp8'?584:1024);
+    const comp=3*Math.ceil(ctx/2)*(dtype==='fp8'?584:1024)+1*ctx*(dtype==='fp8'?584:1024);
+    const idx=8*Math.ceil(ctx/2)*128*b;
+    return swa+comp+idx+4*8*512*b;
+  }
+  if(m.key==='kimi') return 24*576*b*ctx + 69*stateBytes(m,tp);
+  if(m.key==='qwen') return 12*(2*256*2*b + 128*b/4)*ctx + 36*stateBytes(m,tp) + 2*1024*1024;
+  return 11*(512*b + 128*b/4)*ctx + 34*stateBytes(m,tp) + 11*2048;
+}
+function renderCalc(){
+  const mem=parseFloat($('cMem').value||40)*1024**3;
+  const ctx=parseInt($('cCtx').value||32768);
+  const tp=parseInt($('cTp').value||8);
+  const dtype=$('cDtype').value;
+  const rows=Object.values(MODELS).map(m=>({m, bytes: requestBytes(m,ctx,dtype,tp)}));
+  const max=Math.max(...rows.map(r=>r.bytes));
+  $('calcRows').innerHTML=rows.map(r=>`<tr>
+    <td><b>${r.m.short}</b><div class="note">${r.m.params}</div></td>
+    <td class="mono">${fmt(r.bytes)}</td>
+    <td class="mono">${(mem/r.bytes).toFixed(2)} ×</td>
+    <td><div class="bar"><i style="width:${Math.max(3,r.bytes/max*100)}%"></i></div></td>
+  </tr>`).join('');
+  $('calcHint').textContent =
+    `当前 ${ctx.toLocaleString()} tokens，${dtype}，TP=${tp}。把上下文从 32k 拉到 128k，观察哪些模型近似线性增长、哪些只涨一点；再把 dtype 从 bf16 切到 fp8，看哪些模型的 KV 减半。`;
+}
+
+// ---------- ring / CircularBuffer ----------
+const RINGS = {
+  ds:   {label:'DSV4.1 compressor state', heads:1, head:512, dtype:'float32', bytes:4, note:'压缩器 state / tail；每请求 1 block'},
+  glm:  {label:'GLM-5.3 indexer tail',     heads:2, head:128, dtype:'bfloat16', bytes:2, note:'原始 K + gate；未满 kpool 的 tail'},
+  qwen: {label:'Qwen3.8 QSA ring',          heads:1, head:128, dtype:'bfloat16', bytes:2, note:'open group 的 raw K；QSA 压缩前的 ring'},
+};
+let rPos = 5;
+function renderRing(){
+  const kind=$('rKind').value, R=parseInt($('rRing').value), d=RINGS[kind];
+  const cur = rPos % R;
+  const written = Math.min(rPos+1, R);
+  const overwritten = Math.max(0, rPos+1-R);
+  $('rPosVal').textContent = rPos;
+  const grid=$('rGrid'); grid.innerHTML='';
+  for(let i=0;i<R;i++){
+    const el=document.createElement('div');
+    el.className='cell'+(i<written?' used':'')+(i===cur?' writing':'');
+    el.innerHTML=`<span>${i}</span>${i===cur?'写':' '}`;
+    grid.appendChild(el);
+  }
+  const page = d.heads * R * d.head * d.bytes;
+  $('rFormula').textContent =
+`uses_slot_mapping = False
+slot              = p % R = ${rPos} % ${R} = ${cur}
+block_table       = [77]          # 1 block/req
+cache view        = [1, ${d.heads}, ${R}, ${d.head}]  # 1 block
+page_size_bytes   = ${d.heads} * ${R} * ${d.head} * ${d.bytes} = ${page} B
+overwritten       = ${overwritten} 次`;
+  $('rInfo').innerHTML = `
+    <div>spec 类</div><div>CircularBufferSpec</div>
+    <div>block_size</div><div>${R}（ring 容量，不是 token block）</div>
+    <div>num_kv_heads</div><div>${d.heads}</div>
+    <div>head_size / v</div><div>${d.head} / 0</div>
+    <div>dtype</div><div>${d.dtype}</div>
+    <div>prefix_cacheable</div><div>False</div>
+    <div>uses_slot_mapping</div><div>False</div>
+    <div>max blocks/req</div><div>1</div>
+    <div>用途</div><div>${d.note}</div>`;
+}
+function initRing(){
+  $('rKind').onchange=renderRing;
+  $('rRing').onchange=renderRing;
+  $('rPos').oninput=(e)=>{rPos=+e.target.value; renderRing();};
+  $('rAppend').onclick=()=>{rPos=Math.min(31,rPos+1); $('rPos').value=rPos; renderRing();};
+  $('rReset').onclick=()=>{rPos=5; $('rPos').value=5; renderRing();};
+  renderRing();
+}
+
+// ---------- quiz ----------
+const QUIZ = [
+  {q:'DeepSeek V4.1 有 40 层，为什么只有 4 个 compressed KV spec？', o:['因为只有 kv_source_layer_ids=[2,8,14,20] 拥有 compressed cache','因为每层都有但被合并了','因为 36 层是线性注意力','因为 compressed 只在 MTP 层'], a:0, e:'非 source 层通过 compressed_cache_prefix 读 source 的 cache。'},
+  {q:'Kimi K3 的 69 层 KDA 用什么 KV cache spec？', o:['MLAAttentionSpec','FullAttentionSpec','MambaSpec','CircularBufferSpec'], a:2, e:'KDA 是线性注意力，用固定 conv+recurrent state；MambaSpec 不随序列长度增长。'},
+  {q:'Qwen3.8 的 full attention 是哪种结构？', o:['MLA','GQA（2 KV heads × 256）','MQA（1 KV head）','纯线性注意力'], a:1, e:'Qwen 的 full attention 是 GQA；QSA 只是它的 sparse index side branch。'},
+  {q:'GLM-5.3 的 sparse MLA cache 每层 head_size 是多少？', o:['256','512','576','1024'], a:1, e:'kv_lora_rank=512，qk_rope_head_dim=0，所以 cache 行宽 512。'},
+  {q:'MLAAttentionSpec 的 page_size_bytes 公式是？', o:['num_heads × block_size × head_size','num_heads × (block_size/tokens_per_state) × content_bytes','block_size × tokens_per_state × dtype','num_heads × max_model_len × head_size'], a:1, e:'tokens_per_state 把多个 token 压成一个 state，page 内 state 数 = block_size/tokens_per_state。'},
+  {q:'bytes_per_block 应该怎么算？', o:['单层 page_size','group 内所有层 page_size 之和，再取所有 group 最大值','num_blocks × page_size','head_size × num_layers'], a:1, e:'一个 block id 要覆盖 group 内每层 page，且所有 group 共享 block 编号空间。'},
+  {q:'B=16，block_table=[4,2,7]，pos=45 的 slot 是？', o:['109','125','141','152'], a:1, e:'block_idx=2，offset=13，slot=7*16+13=125。'},
+  {q:'CircularBufferSpec 的 uses_slot_mapping 为什么是 False？', o:['它不参与 attention','它每请求固定 1 block，由层按 pos % ring 寻址','它只用于前缀缓存','它没有 block table'], a:1, e:'ring 是 scratch，不需要 per-token slot，也不参与前缀缓存。'},
+  {q:'Kimi K3 的 MLA cache 每 token 多少维？', o:['512','576','1024','128'], a:1, e:'kv_lora_rank 512 + qk_rope 64 = 576；即使 mla_use_nope 也按 576 分配。'},
+  {q:'Qwen QSA compressed key cache 的 tokens_per_state 是？', o:['1','2','4','8'], a:2, e:'indexer_compress_ratio=4，每 4 个 token 一个 compressed key entry。'},
+  {q:'一个 KV group 和 AttentionGroup 的关系是？', o:['完全等价','KV group 共享 block table；AttentionGroup 是 group 内按 backend/spec/Q头数再拆','AttentionGroup 更大','两者无关'], a:1, e:'一个 KV group 可以包含多个 AttentionGroup，但它们共用同一张 block table。'},
+  {q:'DeepSeek V4.1 的 SWA cache 由谁声明？', o:['MLAAttention 的 get_kv_cache_spec','独立的 DeepseekV4SWACache 模块','KVCacheManager 自动生成','Tokenizer'], a:1, e:'每层有一个独立的 swa_cache 模块，返回 SlidingWindowMLASpec。'}
+];
+let quizOrder=[], qi=0, score=0, answered=false;
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
+function startQuiz(){quizOrder=shuffle([...QUIZ]).slice(0,6); qi=0; score=0; renderQuiz();}
+function renderQuiz(){
+  answered=false;
+  if(qi>=quizOrder.length){
+    $('qText').textContent=`完成！${score} / ${quizOrder.length}`;
+    $('qOpts').innerHTML='';
+    $('qFeedback').textContent='点“下一题”重新开始。';
+    $('qScore').textContent=`${score} / ${quizOrder.length}`;
+    return;
+  }
+  const q=quizOrder[qi];
+  $('qText').textContent=`${qi+1}. ${q.q}`;
+  $('qOpts').innerHTML='';
+  q.o.forEach((opt,idx)=>{
+    const b=document.createElement('button');
+    b.className='opt'; b.textContent=opt;
+    b.onclick=()=>{
+      if(answered) return; answered=true;
+      const ok=idx===q.a;
+      if(ok) score++;
+      b.classList.add(ok?'ok':'no');
+      [...$('qOpts').children].forEach((x,j)=>{if(j===q.a)x.classList.add('ok');});
+      $('qFeedback').textContent=(ok?'✓ ':'✗ ')+q.e;
+      $('qScore').textContent=`${score} / ${qi+1}`;
+    };
+    $('qOpts').appendChild(b);
+  });
+  $('qFeedback').textContent='';
+  $('qScore').textContent=`${score} / ${qi}`;
+}
+function nextQuiz(){
+  if(qi>=quizOrder.length){ startQuiz(); return; }
+  if(!answered){ $('qFeedback').textContent='先选一个答案，再下一题。'; return; }
+  qi++; renderQuiz();
+}
+
+// ---------- tabs ----------
+function activateTab(name){
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active', x.dataset.tab===name));
+  document.querySelectorAll('section').forEach(x=>x.classList.toggle('active', x.id===name));
+  if(name==='calc') renderCalc();
+  if(name==='paging') renderPaging();
+  if(name==='ring') renderRing();
+  if(name==='quiz' && quizOrder.length===0) startQuiz();
+}
+document.querySelectorAll('.tab').forEach(t=>{
+  t.onclick=()=>{ activateTab(t.dataset.tab); try{ history.replaceState(null,'','#'+t.dataset.tab); }catch(e){} };
+});
+if(location.hash){ const n=location.hash.slice(1); if(['map','paging','calc','ring','quiz'].includes(n)) activateTab(n); }
+
+// ---------- init ----------
+const qm = new URLSearchParams(location.search).get('m');
+if(qm && MODELS[qm]) current = qm;
+buildModelButtons(); renderMap(); initPaging(); initRing();
+$('cMem').oninput=renderCalc; $('cCtx').oninput=renderCalc; $('cTp').onchange=renderCalc; $('cDtype').onchange=renderCalc;
+$('qNext').onclick=nextQuiz;
+renderCalc();
+</script>
+</body>
+</html>

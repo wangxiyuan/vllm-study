@@ -211,11 +211,6 @@ GPU0: embedding weight [75968, 2048]   ← token ID 0~75967 的向量
 GPU1: embedding weight [75968, 2048]   ← token ID 75968~151935 的向量
 ```
 
-> 源码：`vllm/model_executor/layers/vocab_parallel_embedding.py:301-304`
-> ```python
-> self.num_embeddings_per_partition = divide(self.num_embeddings_padded, self.tp_size)
-> ```
-
 ### 前向计算
 
 ```
@@ -227,18 +222,6 @@ GPU1: 查表 → tokens 14,26,37,52 不在 GPU1 的范围内 → 查到 [5, 2048
       token "谁" (52 < 75968) → 不在 GPU1，输出 mask 为零
 ```
 
-> 源码：`vllm/model_executor/layers/vocab_parallel_embedding.py:472-491`
-> ```python
-> def forward(self, input_):
->     if self.tp_size > 1:
->         masked_input, input_mask = get_masked_input_and_mask(...)
->     output_parallel = self.quant_method.embedding(self, masked_input.long())
->     if self.tp_size > 1:
->         output_parallel.masked_fill_(input_mask.unsqueeze(-1), 0)
->     output = tensor_model_parallel_all_reduce(output_parallel)
->     return output
-> ```
-
 关键步骤：
 1. **mask 查表**：每张卡只知道自己的 token 应不应该查自己的表。不在范围内的 token 被 mask 为 0。
 2. **all-reduce**：两张卡的输出做 all-reduce（求和），因为各卡对非自己范围的 token 输出为 0，求和后就是完整的 embedding。
@@ -249,12 +232,6 @@ GPU1 输出: [ 0     ,  0     ,  0     ,  0     ,  0      ]  ← 全不在范围
                                       ↓ all-reduce (sum)
 结果:     [emb(14), emb(26), emb(14), emb(37), emb(52)]  ← [5, 2048]
 ```
-
-> 源码：`vllm/distributed/communication_op.py:12-14`
-> ```python
-> def tensor_model_parallel_all_reduce(input_):
->     return get_tp_group().all_reduce(input_)
-> ```
 
 ---
 
@@ -285,16 +262,6 @@ KV 的划分: 4 KV heads / 2 = 每卡 2 个 KV head → 2×128 = 256 维
 
 > 注：只有当 `tp_size > num_kv_heads` 时才需要复制 KV head（例如 1 个 KV head 配 TP=4 时）。
 
-> 源码：`vllm/model_executor/layers/linear.py:966-973`
-> ```python
-> self.num_heads = divide(self.total_num_heads, tp_size)  # 32/2=16
-> if tp_size >= self.total_num_kv_heads:        # 2 >= 4? No
->     self.num_kv_heads = 1                     # 不走这里
->     self.num_kv_head_replicas = divide(tp_size, self.total_num_kv_heads)
-> else:
->     self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)  # 4/2=2
->     self.num_kv_head_replicas = 1
-> ```
 
 **权重切分**（沿输出维 = head 维切分）：
 
@@ -317,24 +284,6 @@ GPU1: [5, 2048] @ [2048, 2560]^T = [5, 2560]
 ```
 
 **不需要通信**：因为 Q 和 KV head 是均匀分配的（每个 head 独立做 attention，不需要跨卡交互），所以 `QKVParallelLinear` 的 `gather_output=False`（默认不收集）。
-
-**源码确认**：
-> `vllm/model_executor/models/qwen3_moe.py:300-308`
-> ```python
-> self.qkv_proj = QKVParallelLinear(
->     hidden_size, self.head_dim,
->     self.total_num_heads, self.total_num_kv_heads,
->     bias=qkv_bias, quant_config=quant_config,
->     prefix=f"{prefix}.qkv_proj",
-> )
-> ```
-> 
-> `vllm/model_executor/layers/linear.py:986-997`
-> ```python
-> super().__init__(
->     ..., gather_output=False, ...
-> )
-> ```
 
 ---
 
@@ -369,11 +318,6 @@ GPU0: O 权重 [2048, 2048]   ← 取左半 2048 列 (head 0~15 对应的列)
 GPU1: O 权重 [2048, 2048]   ← 取右半 2048 列 (head 16~31 对应的列)
 ```
 
-> 源码：`vllm/model_executor/layers/linear.py:1546` — input 沿第一维（输入维）切分
-> ```python
-> self.input_size_per_partition = divide(input_size, self.tp_size)
-> ```
-
 **前向计算**：
 
 RowParallelLinear 的输入已经是"自然的并行状态"：GPU0 持有 Q head 0~15 的注意力输出（前 2048 维），GPU1 持有 head 16~31 的输出（后 2048 维）。
@@ -385,11 +329,6 @@ GPU1: [5, 2048] @ [2048, 2048]^T = [5, 2048]   ← 部分和
 结果: [5, 2048]  ← 完整的 O 投影输出
 ```
 
-> 源码：`vllm/model_executor/layers/linear.py:1646-1647`
-> ```python
-> if self.reduce_results and self.tp_size > 1:
->     output = tensor_model_parallel_all_reduce(output_parallel)
-> ```
 
 **为什么需要 all-reduce？** 每张卡的 O 权重只处理了部分 head 的输出，要得到完整的 2048 维结果，需要把两张卡的部分和加起来。
 
@@ -420,11 +359,6 @@ GPU0: [5, 2048] @ [2048, 128]^T = [5, 128]  ← router_logits
 GPU1: [5, 2048] @ [2048, 128]^T = [5, 128]  ← 相同结果
 ```
 
-> 源码：`vllm/model_executor/models/qwen3_moe.py:179-185`
-> ```python
-> self.gate = ReplicatedLinear(config.hidden_size, config.num_experts, ...)
-> ```
-
 因为权重完全相同、输入完全相同，两张卡算出的 `router_logits` 也相同，后续 top-k 选择结果自然也相同。
 
 ---
@@ -439,12 +373,6 @@ MoE 内部创建了 `FusedMoEParallelConfig`，TP=2 且不启用 EP 时：
 - `tp_size=2`, `tp_rank=0/1` — 专家权重沿 TP 切分
 - `intermediate_size_per_partition = moe_intermediate_size / tp_size = 768 / 2 = 384`
 
-> 源码：`vllm/model_executor/layers/fused_moe/config.py:1299-1301`
-> ```python
-> tp_size = self.moe_parallel_config.tp_size
-> self.intermediate_size_per_partition = self.intermediate_size // tp_size
-> ```
-
 **w13 (gate_up_proj) — 列切**，沿输出维切分：
 
 ```
@@ -457,15 +385,6 @@ GPU1: 每个专家 w13 [768, 2048]  ← 完整 w13 的后 768 行
                                   → gate_proj 的后 384 行 + up_proj 的后 384 行
 ```
 
-> 源码：`vllm/model_executor/layers/fused_moe/routed_experts.py:436-485`
-> ```python
-> def _load_w13(self, expert_data, shard_dim, shard_id, loaded_weight, tp_rank, ...):
->     # gate_up_proj: "MergedColumnParallel", tp sharding on output_dim
->     shard_size = expert_data.shape[shard_dim] // 2
->     # ... narrow by tp_rank
->     start_offset = loaded_per_rank * tp_rank
->     loaded_weight = loaded_weight.narrow(shard_dim, start_offset, narrow_size)
-> ```
 
 **w2 (down_proj) — 行切**，沿输入维切分：
 
@@ -477,11 +396,6 @@ GPU0: 每个专家 w2 [2048, 384]  ← 完整 w2 的前 384 列（输入维 0~38
 GPU1: 每个专家 w2 [2048, 384]  ← 完整 w2 的后 384 列（输入维 384~767）
 ```
 
-> 源码：`vllm/model_executor/layers/fused_moe/routed_experts.py:487-530`
-> ```python
-> def _load_w2(self, expert_data, shard_dim, loaded_weight, tp_rank, ...):
->     # down_proj: "RowParallel" so tp sharding on input_dim
-> ```
 
 #### 2.4.c 前向计算：FusedMoE 融合 Kernel
 
@@ -503,17 +417,6 @@ GPU1: 对每个被激活的专家，仅用 w13 的后 768 行 和 w2 的后 384 
 结果: final_hidden_states [5, 2048]
 ```
 
-> 源码：`vllm/model_executor/layers/fused_moe/runner/moe_runner.py:431-451`
-> ```python
-> def _maybe_reduce_final_output(self, states, trunc_size):
->     if (
->         not self.moe_config.is_sequence_parallel
->         and (self.moe_config.tp_size > 1 or self.moe_config.ep_size > 1)
->         and not self._fused_output_is_reduced
->     ):
->         states = tensor_model_parallel_all_reduce(states)
->     return states[...]
-> ```
 
 当融合 kernel 的 `output_is_reduced()` 返回 False（即 kernel 内部不做 reduce），则 `MoERunner.forward()` 会调用 `_maybe_reduce_final_output` 进行 all-reduce。
 
@@ -583,11 +486,6 @@ GPU1: [5, 2048] @ [2048, 75968]^T = [5, 75968]   ← 仅 token 75968~151935 的 
 
 **不在此处通信**。LM Head 的输出不是通过 all-gather 合并，而是通过 vLLM 内部的 `LogitsProcessor` 在采样阶段做 **all-gather**：
 
-> 源码：`vllm/model_executor/layers/vocab_parallel_embedding.py:562-564`
-> ```python
-> def forward(self, input_):
->     raise RuntimeError("LMHead's weights should be used in the sampler.")
-> ```
 
 采样时的 logits 合并：`LogitsProcessor` 调用 `tensor_model_parallel_all_gather` 将两张卡的 logits 拼成 `[5, 151936]`，再做 sampling。
 

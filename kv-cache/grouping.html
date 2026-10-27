@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KV Cache 分组实验</title>
+<style>
+  :root{--bg:#0b1020;--panel:#121a31;--panel2:#17213d;--line:#26324f;--text:#e8eefc;--muted:#91a0c2;
+        --accent:#6ea8fe;--accent2:#7ee7c7;--warn:#ffcc66;--bad:#ff7a90;--mla:#6ea8fe;--linear:#7ee7c7;
+        --swa:#c49bff;--comp:#ffb86b;--idx:#ff7ab6;--ring:#9aa7c7;--gqa:#ffb86b;--qsa:#6ea8fe;--gdn:#7ee7c7}
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1100px 560px at 18% -10%,#1a2a55 0%,var(--bg) 55%);color:var(--text);
+       font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",sans-serif}
+  header{max-width:1120px;margin:0 auto;padding:24px 20px 8px}
+  h1{margin:0 0 5px;font-size:23px} h2{font-size:16px;margin:0 0 6px}
+  .sub{color:var(--muted);font-size:12.5px}
+  main{max-width:1120px;margin:0 auto;padding:12px 20px 52px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px}
+  .modelbtns{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+  .mbtn{padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--muted);cursor:pointer;font:inherit}
+  .mbtn.active{color:#fff;border-color:var(--accent);background:#1c2d55}
+  .stages{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0}
+  .stage{background:#0e172b;border:1px solid var(--line);border-radius:11px;padding:9px 11px}
+  .stage span{display:block;color:var(--muted);font-size:11px}
+  .stage b{font-size:19px}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:11.5px;margin:8px 0}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+  .strip{display:grid;grid-template-columns:repeat(auto-fill,minmax(20px,1fr));gap:4px;background:#0d1428;
+         border:1px solid var(--line);border-radius:11px;padding:9px}
+  .cell{height:32px;border-radius:5px;background:#1e2a47;border:1px solid #2b3a5e;cursor:pointer;position:relative}
+  .cell:hover{transform:translateY(-1px);box-shadow:0 3px 10px #0008}
+  .cell.sel{outline:2px solid #fff;outline-offset:1px}
+  .cell .n{position:absolute;left:2px;top:0;font-size:8px;color:#ffffff99}
+  .cell.swa{background:linear-gradient(180deg,#4a3a72,#35294f);border-color:#6b52a3}
+  .cell.comp{background:linear-gradient(180deg,#6a4a22,#4a3418);border-color:#a06a2a}
+  .cell.mla{background:linear-gradient(180deg,#2c4f88,#203a67);border-color:#3c65a8}
+  .cell.linear{background:linear-gradient(180deg,#1d4d43,#183b36);border-color:#2c6b5c}
+  .cell.gqa{background:linear-gradient(180deg,#6a4a22,#4a3418);border-color:#a06a2a}
+  .cell.ring{background:linear-gradient(180deg,#4a4f67,#34394d);border-color:#68708d}
+  .grid{display:grid;grid-template-columns:1.05fr .95fr;gap:12px}
+  .gcard{background:#0f1830;border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin:7px 0;cursor:pointer}
+  .gcard:hover{border-color:#4264a0}
+  .gcard.active{border-color:var(--accent2);box-shadow:0 0 0 1px var(--accent2) inset}
+  .gcard .top{display:flex;justify-content:space-between;gap:8px;align-items:center}
+  .gcard b{font-size:13px} .gcard .spec{color:var(--accent2);font-size:11px;font-family:ui-monospace,Menlo,monospace}
+  .gcard .meta{color:var(--muted);font-size:11px;margin-top:3px}
+  .pill{display:inline-block;border:1px solid #35507f;background:#152443;color:#bcd2ff;border-radius:999px;padding:2px 7px;font-size:10px;margin-left:5px}
+  .kv{display:grid;grid-template-columns:92px 1fr;gap:4px 9px;font-size:12px;margin-top:6px}
+  .kv div:nth-child(odd){color:var(--muted)}
+  .mono{font-family:ui-monospace,Menlo,monospace}
+  .note{color:var(--muted);font-size:12px}
+  .rule{border-left:3px solid #3d6fb5;background:#0d1729;border-radius:0 8px 8px 0;padding:8px 12px;color:#c4d2ec;font-size:12.5px;margin:10px 0}
+  .thin{height:1px;background:var(--line);margin:12px 0}
+  @media(max-width:860px){.grid{grid-template-columns:1fr}.stages{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>KV Cache 分组实验</h1>
+  <div class="sub">同一个模型，为什么会有 2–6 个 group？看模型层 → cache 模块 → spec 条目 → group 的收缩过程。</div>
+  <div class="modelbtns" id="modelBtns"></div>
+</header>
+<main>
+  <div class="card">
+    <div class="stages">
+      <div class="stage"><span>模型层</span><b id="stLayers">—</b></div>
+      <div class="stage"><span>cache 模块 / spec 条目</span><b id="stEntries">—</b></div>
+      <div class="stage"><span>merge 后 group</span><b id="stGroups">—</b></div>
+      <div class="stage"><span>block table 数量</span><b id="stTables">—</b></div>
+    </div>
+    <div class="legend" id="legend"></div>
+    <div class="strip" id="strip"></div>
+    <div class="note" style="margin-top:8px">点层格子看它注册了哪些 cache 模块；点下面的 group 看哪些层被 merge 到一起。</div>
+    <div class="rule" id="tensorLine" style="margin-bottom:0"></div>
+  </div>
+  <div class="grid">
+    <div class="card">
+      <h2>group：谁和谁共享 block table</h2>
+      <div id="groups"></div>
+    </div>
+    <div class="card">
+      <h2 id="detailTitle">分组规则</h2>
+      <div id="detail"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>为什么不是“每层一个 group”</h2>
+    <div class="rule">
+      <b>merge 的条件</b>：spec 类型相同、<span class="mono">page_size_bytes</span> 相同、state 形状/生命周期相同。满足时，多条 spec 条目可以共享一张 block table；不满足就只能拆 group。
+    </div>
+    <div id="why" class="note"></div>
+  </div>
+</main>
+<script>
+const FULL_QWEN = Array.from({length:48},(_,i)=>i).filter(i=>i%4===3);
+const FULL_GLM = Array.from({length:45},(_,i)=>i).filter(i=>i%4===3);
+const FULL_KIMI = [3,7,11,15,19,23,27,31,35,39,43,47,51,55,59,63,67,71,75,79,83,87,91,92];
+const range = (n)=>Array.from({length:n},(_,i)=>i);
+const MODELS = {
+  ds:{
+    name:'DeepSeek-V4.1-Flash', short:'DSV4.1', layers:40,
+    groups:[
+      {id:'swa', title:'SWA cache', spec:'SlidingWindowMLASpec', layers:range(40), entries:40, page:'window=128, head=512, fp8 packed', why:'40 层每层都有 SWA；spec 字段完全相同，40 条 merge 成 1 组。'},
+      {id:'c2', title:'compressed ratio 2', spec:'MLAAttentionSpec', layers:[2,8,14], entries:3, page:'tokens_per_state=2, head=512', why:'3 个 source 的 compressed spec 相同；消费者层不在这里。'},
+      {id:'c1', title:'compressed ratio 1', spec:'MLAAttentionSpec', layers:[20], entries:1, page:'tokens_per_state=1, head=512', why:'ratio=1 的 source 只有 1 层；和 ratio2 的 tokens_per_state 不同，不能 merge。'},
+      {id:'i2', title:'indexer ratio 2', spec:'MLAAttentionSpec', layers:[2,8,14], entries:3, page:'head=128, tokens_per_state=2', why:'indexer 的 side cache，page 与主 compressed 不同。'},
+      {id:'i1', title:'indexer ratio 1', spec:'MLAAttentionSpec', layers:[20,24,28,32,36], entries:5, page:'head=128, tokens_per_state=1', why:'5 个 index source 同 spec；ratio2 组不能并进来。'},
+      {id:'comp', title:'compressor ring', spec:'CircularBufferSpec', layers:[2,8,14,20], entries:4, page:'ring, 1 block/req', why:'每请求固定 1 block，uses_slot_mapping=False；生命周期完全不同。'},
+    ]
+  },
+  kimi:{
+    name:'Kimi-K3', short:'Kimi K3', layers:93,
+    groups:[
+      {id:'mla', title:'Gated MLA', spec:'MLAAttentionSpec', layers:FULL_KIMI, entries:24, page:'head=576, 1 KV head', why:'24 层 MLA 的 spec 完全一致，merge 成 1 组。'},
+      {id:'kda', title:'KDA', spec:'MambaSpec', layers:range(93).filter(i=>!FULL_KIMI.includes(i)), entries:69, page:'conv + recurrent state', why:'69 层 state 形状相同、固定大小；与 MLA 的 token 维度完全不同，不能 merge。'},
+    ]
+  },
+  qwen:{
+    name:'Qwen3.8-Flash-Next', short:'Qwen3.8', layers:48,
+    groups:[
+      {id:'gqa', title:'GQA full attention', spec:'FullAttentionSpec', layers:FULL_QWEN, entries:12, page:'2 KV heads × 256', why:'12 层 full attention spec 相同，merge 成 1 组。'},
+      {id:'qsa', title:'QSA compressed key', spec:'MLAAttentionSpec', layers:FULL_QWEN, entries:12, page:'head=128, tokens_per_state=4', why:'每层 full attention 的 side cache；page 和 GQA 不同，独立 group。'},
+      {id:'ring', title:'QSA ring', spec:'CircularBufferSpec', layers:FULL_QWEN, entries:12, page:'capacity 4+num_spec, 1 block/req', why:'不按 token 增长，也不生成 slot mapping。'},
+      {id:'gdn', title:'GDN', spec:'MambaSpec', layers:range(48).filter(i=>!FULL_QWEN.includes(i)), entries:36, page:'conv + recurrent state', why:'36 层 GDN state 形状相同，merge 成 1 组。'},
+      {id:'ple', title:'PLE short conv', spec:'MambaSpec', layers:[2], entries:1, page:'tp_replicated=True', why:'虽然是 MambaSpec，但 tp_replicated/shape 与 GDN 不同，单独 1 组。'},
+    ]
+  },
+  glm:{
+    name:'GLM-5.3-Flash', short:'GLM-5.3', layers:45,
+    groups:[
+      {id:'mla', title:'sparse MLA', spec:'MLAAttentionSpec', layers:FULL_GLM, entries:11, page:'head=512, 无 RoPE', why:'11 层 sparse MLA spec 相同，merge 成 1 组。'},
+      {id:'kpool', title:'indexer kpool', spec:'MLAAttentionSpec', layers:FULL_GLM, entries:11, page:'head=128, tokens_per_state=4', why:'indexer 的 kpool side cache；page 与主 MLA 不同。'},
+      {id:'tail', title:'indexer tail', spec:'CircularBufferSpec', layers:FULL_GLM, entries:11, page:'2 heads × 128, bf16 ring', why:'未满 kpool 的 raw K；固定 ring，不参与前缀缓存。'},
+      {id:'kda', title:'KDA', spec:'MambaSpec', layers:range(45).filter(i=>!FULL_GLM.includes(i)), entries:34, page:'conv + recurrent state', why:'34 层 KDA state 相同，merge 成 1 组。'},
+    ]
+  }
+};
+let current='qwen', selectedGroup=null;
+const $=(id)=>document.getElementById(id);
+const model=()=>MODELS[current];
+const kindClass=(i)=>{
+  if(current==='ds') return 'swa';
+  if(i===(current==='glm'?3:-1)) return 'mla';
+  if(current==='qwen') return FULL_QWEN.includes(i)?'gqa':'linear';
+  if(current==='glm') return FULL_GLM.includes(i)?'mla':'linear';
+  if(current==='kimi') return FULL_KIMI.includes(i)?'mla':'linear';
+  return 'mla';
+};
+function buildButtons(){
+  const box=$('modelBtns'); box.innerHTML='';
+  Object.entries(MODELS).forEach(([k,m])=>{
+    const b=document.createElement('button'); b.className='mbtn'+(k===current?' active':'');
+    b.textContent=m.short; b.onclick=()=>{current=k; selectedGroup=null; render();}; box.appendChild(b);
+  });
+}
+function render(){
+  buildButtons();
+  const m=model();
+  const entries=m.groups.reduce((a,g)=>a+g.entries,0);
+  $('stLayers').textContent=m.layers; $('stEntries').textContent=entries;
+  $('stGroups').textContent=m.groups.length; $('stTables').textContent=m.groups.length;
+  $('legend').innerHTML='<span><i class="dot" style="background:#ffb86b"></i>full / compressed attention</span><span><i class="dot" style="background:#7ee7c7"></i>linear / recurrent</span><span><i class="dot" style="background:#c49bff"></i>SWA</span><span><i class="dot" style="background:#9aa7c7"></i>ring / side cache</span>';
+  const strip=$('strip'); strip.innerHTML='';
+  for(let i=0;i<m.layers;i++){
+    const el=document.createElement('div'); el.className='cell '+kindClass(i); el.dataset.i=i;
+    el.innerHTML=`<span class="n">${i}</span>`; el.title=`layer ${i}`;
+    if(current==='ds' && [2,8,14,20].includes(i)) el.insertAdjacentHTML('beforeend','<span style="position:absolute;right:2px;top:0;font-size:9px;color:#ffe08a">★</span>');
+    el.onclick=()=>selectLayer(i); strip.appendChild(el);
+  }
+  $('groups').innerHTML=m.groups.map((g,idx)=>`
+    <div class="gcard" data-g="${g.id}">
+      <div class="top"><b>${idx+1}. ${g.title}</b><span class="pill">${g.entries} 条 → 1 group</span></div>
+      <div class="spec">${g.spec}</div>
+      <div class="meta">${g.layers.length} 层 · ${g.page}</div>
+    </div>`).join('');
+  document.querySelectorAll('.gcard').forEach(el=>el.onclick=()=>selectGroup(el.dataset.g));
+  $('tensorLine').innerHTML='<b>tensor 布局：</b>1 块 int8 backing buffer · '+m.groups.length+' 个 group 描述符 · '+entries+' 个 layer view；不是每层单独分配一块显存。';
+  $('why').innerHTML='<b>本模型：</b>'+entries+' 条 spec 条目，经过 merge 后剩 '+m.groups.length+' 个 group；每个 group 对应一张 block table。'+
+    '<br>不能 merge 的典型原因：spec 类不同（FullAttentionSpec vs MambaSpec）、<span class="mono">tokens_per_state</span> 不同、ring 的 1 block/req、Mamba state 的 shape / tp_replicated 不同。';
+  if(selectedGroup) selectGroup(selectedGroup); else selectLayer(FULL_QWEN[0] ?? 0);
+}
+function clearSel(){document.querySelectorAll('.cell.sel').forEach(x=>x.classList.remove('sel'));document.querySelectorAll('.gcard.active').forEach(x=>x.classList.remove('active'));}
+function selectGroup(id){
+  const g=model().groups.find(x=>x.id===id); if(!g) return;
+  selectedGroup=id; clearSel();
+  const set=new Set(g.layers);
+  document.querySelectorAll('.cell').forEach(el=>{ if(set.has(+el.dataset.i)) el.classList.add('sel'); });
+  document.querySelector(`.gcard[data-g="${id}"]`)?.classList.add('active');
+  $('detailTitle').innerHTML=`${g.title} <span class="pill">${g.spec}</span>`;
+  $('detail').innerHTML=`<div class="kv">
+    <div>group 层数</div><div>${g.layers.length}</div>
+    <div>spec 条目</div><div>${g.entries} 条 merge</div>
+    <div>page</div><div>${g.page}</div>
+    <div>为什么</div><div>${g.why}</div>
+    <div>block table</div><div>1 张（group 内共享）</div>
+    <div>tensor</div><div>1 个 group 描述符（alias 同一 backing）</div>
+  </div>`;
+}
+function selectLayer(i){
+  clearSel();
+  const m=model(); const gs=m.groups.filter(g=>g.layers.includes(i));
+  const el=document.querySelector(`.cell[data-i="${i}"]`); if(el) el.classList.add('sel');
+  $('detailTitle').innerHTML=`layer ${i} <span class="pill">${gs.length} 个 cache 模块</span>`;
+  $('detail').innerHTML=`<div class="note">这一层在 spec dict 里可能对应多条记录，而不是一条。</div>`+
+    gs.map(g=>`<div class="gcard" data-g="${g.id}" style="cursor:pointer"><div class="top"><b>${g.title}</b><span class="spec">${g.spec}</span></div><div class="meta">${g.entries} 条同 spec 条目 merge 到本 group</div></div>`).join('')+
+    `<div class="note" style="margin-top:8px">点上面的 group 可以高亮它的所有层。</div>`;
+  document.querySelectorAll('#detail .gcard').forEach(x=>x.onclick=()=>selectGroup(x.dataset.g));
+}
+render();
+</script>
+</body>
+</html>
